@@ -115,7 +115,7 @@ def calculate_derived_values(df):
     
     return df
 
-# Fonction pour générer le PDF amélioré
+# Fonction pour générer le PDF amélioré (version modifiée)
 def generate_pdf(df, proposal_number, buffer, client_info=None):
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm)
     styles = getSampleStyleSheet()
@@ -187,8 +187,8 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
             story.append(Paragraph(f"Catégorie : {category}", category_style))
             story.append(Spacer(1, 10))
 
-            # Données du tableau
-            table_data = [['Libellé article', 'Version', 'Code EDI', 'Prix Net HT', 'Remise (€)', 'Prix après remise', 'PPGC TTC', 'RFA', 'Prix Net Net']]
+            # Données du tableau - MODIFICATION ICI : Code EDI remplacé par Marge nette
+            table_data = [['Libellé article', 'Version', 'Prix Net HT', 'Remise (€)', 'Prix après remise', 'PPGC TTC', 'Marge nette', 'RFA', 'Prix Net Net']]
             
             for _, row in cat_df.iterrows():
                 # Gestion du wrapping pour les libellés longs
@@ -196,17 +196,17 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
                 table_data.append([
                     libelle_para,
                     str(row['Version']),
-                    str(row['Code EDI']),
                     f"{row['Prix Net HT']:.2f}€",
                     f"{row['Remise (€)']:.2f}€" if pd.notna(row['Remise (€)']) else "-",
                     f"{row['Prix net après remise']:.2f}€",
                     f"{row['PPGC TTC']:.2f}€",
+                    f"{row['Marge nette (€)']:.2f}€",  # NOUVELLE COLONNE : Marge nette
                     f"{row['RFA']:.0f}%" if pd.notna(row['RFA']) else "-",
                     f"{row['Prix Net Net']:.2f}€"
                 ])
 
-            # Création du tableau avec largeurs adaptées
-            table = Table(table_data, colWidths=[3.5*cm, 2*cm, 1.8*cm, 2*cm, 2*cm, 2.7*cm, 2*cm, 1.5*cm, 2*cm])
+            # Création du tableau avec largeurs adaptées - MODIFICATION DES LARGEURS
+            table = Table(table_data, colWidths=[3.5*cm, 2*cm, 2*cm, 2*cm, 2.7*cm, 2*cm, 2*cm, 1.5*cm, 2*cm])
             table.setStyle(TableStyle([
                 # En-tête
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f68b1f")),
