@@ -2,5 +2,5 @@ streamlit
 pandas
 numpy
 reportlab
-streamlit-aggrid
+streamlit-aggrid==0.3.4
 openpyxl
