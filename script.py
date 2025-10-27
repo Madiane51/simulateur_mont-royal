@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -520,7 +519,6 @@ def main():
                 with col1:
                     st.write(f"**Prix Brut HT:** {row['Prix Brut HT']:.2f}€")
                     st.write(f"**Prix Net HT:** {row['Prix Net HT']:.2f}€")
-                    # st.caption("(valeurs du fichier)")
                 
                 with col2:
                     # Champ Remise (%)
@@ -533,28 +531,30 @@ def main():
                         key=f"remise_pct_{idx}",
                         help="Remise en % du Prix Brut HT"
                     )
+                    # CORRECTION : Mettre à jour immédiatement le DataFrame
                     modified_articles.loc[idx, 'Remise (%)'] = remise_pct
                     
                     # Calcul automatique de Remise (€) à partir du Prix Brut HT
-                    remise_euros_calc = row['Prix Brut HT'] * remise_pct / 100
-                    # st.caption(f"= {remise_euros_calc:.2f}€")
+                    remise_euros_calc = modified_articles.loc[idx, 'Prix Brut HT'] * remise_pct / 100
+                    modified_articles.loc[idx, 'Remise (€)'] = remise_euros_calc
                 
                 with col3:
                     # Option pour saisir directement en euros
                     remise_manual = st.number_input(
                         "Remise (€)",
                         min_value=0.0,
-                        value=float(row['Remise (€)']) if row['Remise (€)'] != 0 else remise_euros_calc,
+                        value=float(modified_articles.loc[idx, 'Remise (€)']),
                         step=0.1,
                         key=f"remise_euros_{idx}",
                         help="Remise en € (calculée sur Prix Brut HT)"
                     )
-                    modified_articles.loc[idx, 'Remise (€)'] = remise_manual
                     
-                    # Recalculer le pourcentage si modifié manuellement
+                    # Si la valeur manuelle diffère du calcul auto, la prioriser
                     if abs(remise_manual - remise_euros_calc) > 0.01:
-                        if row['Prix Brut HT'] != 0:
-                            new_pct = (remise_manual / row['Prix Brut HT']) * 100
+                        modified_articles.loc[idx, 'Remise (€)'] = remise_manual
+                        # Recalculer le pourcentage
+                        if modified_articles.loc[idx, 'Prix Brut HT'] != 0:
+                            new_pct = (remise_manual / modified_articles.loc[idx, 'Prix Brut HT']) * 100
                             modified_articles.loc[idx, 'Remise (%)'] = new_pct
                 
                 with col4:
@@ -580,12 +580,16 @@ def main():
                     modified_articles.loc[idx, 'RFA'] = rfa
                 
                 with col5:
-                    # Calcul en temps réel
+                    # CORRECTION : Utiliser les valeurs du modified_articles mis à jour
                     remise_finale = modified_articles.loc[idx, 'Remise (€)']
-                    prix_apres_remise = row['Prix Net HT'] - remise_finale
-                    ppgc_ht = prix_apres_remise * coeff if coeff != 0 else 0
+                    prix_net_ht = modified_articles.loc[idx, 'Prix Net HT']
+                    prix_apres_remise = prix_net_ht - remise_finale
+                    coeff_val = modified_articles.loc[idx, 'Coeff']
+                    rfa_val = modified_articles.loc[idx, 'RFA']
+                    
+                    ppgc_ht = prix_apres_remise * coeff_val if coeff_val != 0 else 0
                     ppgc_ttc = ppgc_ht * 1.2
-                    prix_net_net = prix_apres_remise - (prix_apres_remise * rfa / 100)
+                    prix_net_net = prix_apres_remise - (prix_apres_remise * rfa_val / 100)
                     
                     st.write("**Résultats:**")
                     st.write(f"Prix après remise: {prix_apres_remise:.2f}€")
