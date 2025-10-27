@@ -121,7 +121,7 @@ def calculate_derived_values(df):
     return df
 
 # Fonction pour générer le PDF amélioré
-def generate_pdf(df, proposal_number, buffer, client_info=None):
+def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=None):
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm)
     styles = getSampleStyleSheet()
     story = []
@@ -191,22 +191,71 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
             story.append(Paragraph(f"Catégorie : {category}", category_style))
             story.append(Spacer(1, 10))
             
-            # Données du tableau - Prix Brut HT, Remise (%), Prix Net HT
-            table_data = [['Libellé article', 'Version', 'Remise (%)', 'Remise (€)',  'Prix Net HT', 'Prix après remise', 'PPGC TTC', 'Marge nette', 'RFA', 'Prix Net Net']]
+            # En-tête du tableau - adaptatif selon les modes de remise
+            table_header = ['Libellé article', 'Version']
             
-            for _, row in cat_df.iterrows():
+            # Déterminer si on doit afficher les colonnes de remise
+            show_remise_pct = False
+            show_remise_euros = False
+            
+            if remise_modes:
+                for idx in cat_df.index:
+                    mode = remise_modes.get(idx, "En %")
+                    if mode == "En %":
+                        show_remise_pct = True
+                    else:
+                        show_remise_euros = True
+            else:
+                # Par défaut, afficher les deux si remise_modes n'est pas fourni
+                show_remise_pct = True
+                show_remise_euros = True
+            
+            # Construire l'en-tête dynamiquement
+            if show_remise_pct:
+                table_header.append('Remise (%)')
+            if show_remise_euros:
+                table_header.append('Remise (€)')
+            
+            table_header.extend(['Prix Net HT', 'Prix après remise', 'PPGC TTC', 'Marge nette', 'RFA', 'Prix Net Net'])
+            
+            table_data = [table_header]
+            
+            # Largeurs de colonnes adaptatives
+            col_widths = [3*cm, 1.8*cm]
+            if show_remise_pct:
+                col_widths.append(1.5*cm)
+            if show_remise_euros:
+                col_widths.append(1.5*cm)
+            col_widths.extend([2*cm, 2.5*cm, 2*cm, 2*cm, 1.5*cm, 2*cm])
+            
+            for idx, row in cat_df.iterrows():
                 # Gestion du wrapping pour les libellés longs
                 libelle_para = Paragraph(str(row['Libellé article']), styles['Normal'])
                 
-                # Calculer le pourcentage de remise pour l'affichage
-                remise_pct = (row['Remise (€)'] / row['Prix Brut HT'] * 100) if row['Prix Brut HT'] != 0 else 0
+                # Construction de la ligne selon le mode de remise
+                row_data = [libelle_para, str(row['Version'])]
                 
-                table_data.append([
-                    libelle_para,
-                    str(row['Version']),
-                    # f"{row['Prix Brut HT']:.2f}€",
-                    f"{remise_pct:.1f}%" if remise_pct > 0 else "-",
-                    f"{row['Remise (€)']:.2f}€" if row['Remise (€)'] > 0 else "-",
+                # Récupérer le mode pour cet article
+                mode = remise_modes.get(idx, "En %") if remise_modes else "En %"
+                
+                # Ajouter les colonnes de remise selon le mode et ce qui doit être affiché
+                if show_remise_pct:
+                    if mode == "En %":
+                        # Utiliser directement la valeur de Remise (%) stockée
+                        remise_pct = row['Remise (%)']
+                        row_data.append(f"{remise_pct:.1f}%" if remise_pct > 0 else "-")
+                    else:
+                        row_data.append("-")
+                
+                if show_remise_euros:
+                    if mode == "En €":
+                        # Utiliser directement la valeur de Remise (€) stockée
+                        row_data.append(f"{row['Remise (€)']:.2f}€" if row['Remise (€)'] > 0 else "-")
+                    else:
+                        row_data.append("-")
+                
+                # Ajouter les autres colonnes
+                row_data.extend([
                     f"{row['Prix Net HT']:.2f}€",
                     f"{row['Prix net après remise']:.2f}€",
                     f"{row['PPGC TTC']:.2f}€",
@@ -214,9 +263,11 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
                     f"{row['RFA']:.0f}%" if pd.notna(row['RFA']) and row['RFA'] != 0 else "-",
                     f"{row['Prix Net Net']:.2f}€"
                 ])
+                
+                table_data.append(row_data)
             
             # Création du tableau avec largeurs adaptées
-            table = Table(table_data, colWidths=[3*cm, 1.8*cm, 1.8*cm, 1.8*cm, 2*cm, 2.5*cm, 2*cm, 2*cm, 1.5*cm, 2*cm])
+            table = Table(table_data, colWidths=col_widths)
             table.setStyle(TableStyle([
                 # En-tête
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f68b1f")),
@@ -343,6 +394,8 @@ def main():
         st.session_state['articles_data'] = load_default_data()
     if 'selected_articles' not in st.session_state:
         st.session_state['selected_articles'] = pd.DataFrame()
+    if 'remise_modes' not in st.session_state:
+        st.session_state['remise_modes'] = {}
     
     # Sidebar - Chargement de fichier
     with st.sidebar:
@@ -382,6 +435,7 @@ def main():
         if not st.session_state['selected_articles'].empty:
             if st.button("🗑️ Vider le panier", type="secondary"):
                 st.session_state['selected_articles'] = pd.DataFrame()
+                st.session_state['remise_modes'] = {}
                 st.rerun()
     
     # Contenu principal
@@ -505,19 +559,17 @@ def main():
     if not st.session_state['selected_articles'].empty:
         st.markdown("---")
         st.subheader("🛍️ Panier de sélection avec ajustements commerciaux")
-
         st.info("💡 Choisissez le mode de saisie de la remise (en % ou en €) pour chaque article. "
                 "Les valeurs sont mémorisées et les calculs se mettent à jour automatiquement.")
-
+        
         # Parcours des articles du panier
         for idx, row in st.session_state['selected_articles'].iterrows():
             with st.expander(f"📝 {row['Libellé article']} - {row['Version']}", expanded=False):
-
                 # Déterminer/initialiser le mode de saisie (par défaut : % si non nul, sinon €)
                 mode_key = f"remise_mode_{idx}"
                 if mode_key not in st.session_state:
                     st.session_state[mode_key] = "En %" if float(row.get('Remise (%)', 0) or 0) > 0 else "En €"
-
+                
                 # Sélecteur horizontal du mode
                 mode = st.radio(
                     "Mode de saisie de la remise",
@@ -526,14 +578,17 @@ def main():
                     key=mode_key,
                     help="Choisissez comment saisir la remise pour cet article."
                 )
-
+                
+                # Stocker le mode de remise pour cet article
+                st.session_state['remise_modes'][idx] = mode
+                
                 # Mise en page des champs
                 col1, col2, col3, col4, col5 = st.columns([1.2, 1.5, 1.5, 1.2, 1.6])
-
+                
                 with col1:
                     st.write(f"**Prix Brut HT :** {float(row['Prix Brut HT']):.2f}€")
                     st.write(f"**Prix Net HT :** {float(row['Prix Net HT']):.2f}€")
-
+                
                 # --- Saisie de la remise selon le mode ---
                 with col2:
                     if mode == "En %":
@@ -552,7 +607,6 @@ def main():
                         # Calcul de la remise en € à partir du % (priorité au % si non nul)
                         euros_from_pct = float(st.session_state['selected_articles'].at[idx, 'Prix Brut HT']) * new_pct / 100.0
                         st.session_state['selected_articles'].at[idx, 'Remise (€)'] = euros_from_pct
-
                     else:  # mode == "En €"
                         # Champ Remise (€) actif
                         euros_key = f"remise_euros_{idx}"
@@ -568,7 +622,7 @@ def main():
                         st.session_state['selected_articles'].at[idx, 'Remise (€)'] = new_euros
                         # Forcer le % à 0 pour éviter tout conflit lors des recalculs
                         st.session_state['selected_articles'].at[idx, 'Remise (%)'] = 0.0
-
+                
                 with col3:
                     # Affiche le champ complémentaire en lecture seule selon le mode
                     if mode == "En %":
@@ -592,7 +646,7 @@ def main():
                             disabled=True,
                             help="Désactivée en mode 'En €' (forcée à 0)"
                         )
-
+                
                 with col4:
                     # Coefficient
                     coeff = st.number_input(
@@ -604,7 +658,7 @@ def main():
                         help="Coefficient multiplicateur pour le PPGC"
                     )
                     st.session_state['selected_articles'].at[idx, 'Coeff'] = coeff
-
+                    
                     # RFA
                     rfa = st.number_input(
                         "RFA (%)",
@@ -615,26 +669,26 @@ def main():
                         help="Pourcentage RFA à appliquer"
                     )
                     st.session_state['selected_articles'].at[idx, 'RFA'] = rfa
-
+                
                 with col5:
                     # Recalcule d'aperçu en temps réel (en respectant la logique globale)
                     current_remise_euros = float(st.session_state['selected_articles'].at[idx, 'Remise (€)'])
                     current_remise_autre = float(st.session_state['selected_articles'].at[idx, 'Remise autre (€)']) if 'Remise autre (€)' in st.session_state['selected_articles'].columns else 0.0
                     current_coeff = float(st.session_state['selected_articles'].at[idx, 'Coeff'])
                     current_rfa = float(st.session_state['selected_articles'].at[idx, 'RFA'])
-
+                    
                     prix_net_ht = float(st.session_state['selected_articles'].at[idx, 'Prix Net HT'])
                     prix_apres_remise = prix_net_ht - current_remise_euros - (current_remise_autre or 0.0)
                     ppgc_ht = prix_apres_remise * current_coeff if current_coeff != 0 else 0.0
                     ppgc_ttc = ppgc_ht * 1.20
                     prix_net_net = prix_apres_remise - (prix_apres_remise * current_rfa / 100.0) if current_rfa != 0 else prix_apres_remise
-
+                    
                     st.write("**Résultats :**")
                     st.write(f"Prix après remise : {prix_apres_remise:.2f}€")
                     st.write(f"PPGC HT : {ppgc_ht:.2f}€")
                     st.write(f"PPGC TTC : {ppgc_ttc:.2f}€")
                     st.write(f"Prix Net Net : {prix_net_net:.2f}€")
-
+        
         # Bouton pour recalculer toutes les valeurs dérivées
         col1, col2 = st.columns(2)
         with col1:
@@ -643,23 +697,24 @@ def main():
                 st.session_state['selected_articles'] = calculate_derived_values(st.session_state['selected_articles'])
                 st.success("✅ Tous les calculs ont été mis à jour!")
                 st.rerun()
-
+        
         with col2:
             if st.button("❌ Supprimer tous les articles", type="secondary"):
                 st.session_state['selected_articles'] = pd.DataFrame()
+                st.session_state['remise_modes'] = {}
                 st.rerun()
-
+        
         # Affichage du tableau récapitulatif
         st.subheader("📊 Récapitulatif des articles sélectionnés")
-
+        
         # Recalculer pour l'affichage (garde la priorité au % si non nul)
         display_df = calculate_derived_values(st.session_state['selected_articles'])
-
+        
         # Colonnes à afficher
         display_columns = ['Libellé article', 'Version', 'Code EDI', 'Prix Brut HT',
                         'Remise (%)', 'Remise (€)', 'Prix Net HT', 'Prix net après remise',
                         'Coeff', 'PPGC TTC', 'RFA', 'Prix Net Net']
-
+        
         # Afficher le tableau
         st.dataframe(
             display_df[display_columns].style.format({
@@ -675,25 +730,27 @@ def main():
             }),
             use_container_width=True
         )
-
-        # Résumé & PDF (inchangé)
+        
+        # Résumé & PDF
         st.markdown("### 📊 Résumé de la proposition")
         col1 = st.columns(1)[0]
         total_articles = len(display_df)
+        
         with col1:
             st.metric(label="📦 Nombre d'articles", value=total_articles)
-
+        
         st.markdown("---")
         st.subheader("📄 Génération de la proposition")
-
+        
         col1, col2 = st.columns(2)
+        
         with col1:
             client_info = st.text_input(
                 "👤 Nom du client (optionnel):",
                 placeholder="Nom de l'opticien...",
                 help="Ce nom apparaîtra sur la proposition PDF"
             )
-
+        
         with col2:
             st.write("")  # Espacements
             st.write("")
@@ -701,9 +758,22 @@ def main():
                 try:
                     buffer = BytesIO()
                     proposal_number = generate_proposal_number()
+                    
                     with st.spinner("Génération du PDF en cours..."):
-                        generate_pdf(st.session_state['selected_articles'], proposal_number, buffer, client_info)
+                        # Recalculer toutes les valeurs dérivées avant de générer le PDF
+                        df_for_pdf = calculate_derived_values(st.session_state['selected_articles'])
+                        
+                        # Passer les modes de remise à la fonction de génération PDF
+                        generate_pdf(
+                            df_for_pdf, 
+                            proposal_number, 
+                            buffer, 
+                            client_info,
+                            st.session_state['remise_modes']
+                        )
+                    
                     st.success("✅ PDF généré avec succès!")
+                    
                     st.download_button(
                         label="📥 Télécharger le PDF",
                         data=buffer.getvalue(),
