@@ -509,10 +509,10 @@ def main():
         st.info("💡 Vous pouvez modifier les colonnes Remise (%) ou Remise (€), Coeff, RFA. La remise est calculée sur le Prix Brut HT.")
         
         # Interface d'édition
-        modified_articles = st.session_state['selected_articles'].copy()
+        # CORRECTION : On travaille directement sur la session_state
         
         # Créer des colonnes pour l'édition
-        for idx, row in modified_articles.iterrows():
+        for idx, row in st.session_state['selected_articles'].iterrows():
             with st.expander(f"📝 {row['Libellé article']} - {row['Version']}", expanded=False):
                 col1, col2, col3, col4, col5 = st.columns(5)
                 
@@ -531,31 +531,20 @@ def main():
                         key=f"remise_pct_{idx}",
                         help="Remise en % du Prix Brut HT"
                     )
-                    # CORRECTION : Mettre à jour immédiatement le DataFrame
-                    modified_articles.loc[idx, 'Remise (%)'] = remise_pct
                     
                     # Calcul automatique de Remise (€) à partir du Prix Brut HT
-                    remise_euros_calc = modified_articles.loc[idx, 'Prix Brut HT'] * remise_pct / 100
-                    modified_articles.loc[idx, 'Remise (€)'] = remise_euros_calc
+                    remise_euros_calc = row['Prix Brut HT'] * remise_pct / 100
                 
                 with col3:
                     # Option pour saisir directement en euros
                     remise_manual = st.number_input(
                         "Remise (€)",
                         min_value=0.0,
-                        value=float(modified_articles.loc[idx, 'Remise (€)']),
+                        value=float(row['Remise (€)']) if row['Remise (€)'] != 0 else remise_euros_calc,
                         step=0.1,
                         key=f"remise_euros_{idx}",
                         help="Remise en € (calculée sur Prix Brut HT)"
                     )
-                    
-                    # Si la valeur manuelle diffère du calcul auto, la prioriser
-                    if abs(remise_manual - remise_euros_calc) > 0.01:
-                        modified_articles.loc[idx, 'Remise (€)'] = remise_manual
-                        # Recalculer le pourcentage
-                        if modified_articles.loc[idx, 'Prix Brut HT'] != 0:
-                            new_pct = (remise_manual / modified_articles.loc[idx, 'Prix Brut HT']) * 100
-                            modified_articles.loc[idx, 'Remise (%)'] = new_pct
                 
                 with col4:
                     coeff = st.number_input(
@@ -566,7 +555,6 @@ def main():
                         key=f"coeff_{idx}",
                         help="Coefficient multiplicateur pour le PPGC"
                     )
-                    modified_articles.loc[idx, 'Coeff'] = coeff
                     
                     rfa = st.number_input(
                         "RFA (%)",
@@ -577,19 +565,19 @@ def main():
                         key=f"rfa_{idx}",
                         help="Pourcentage RFA à appliquer"
                     )
-                    modified_articles.loc[idx, 'RFA'] = rfa
                 
                 with col5:
-                    # CORRECTION : Utiliser les valeurs du modified_articles mis à jour
-                    remise_finale = modified_articles.loc[idx, 'Remise (€)']
-                    prix_net_ht = modified_articles.loc[idx, 'Prix Net HT']
-                    prix_apres_remise = prix_net_ht - remise_finale
-                    coeff_val = modified_articles.loc[idx, 'Coeff']
-                    rfa_val = modified_articles.loc[idx, 'RFA']
+                    # Calculs en temps réel pour l'affichage
+                    # Prioriser la saisie manuelle si elle diffère du calcul auto
+                    if abs(remise_manual - remise_euros_calc) > 0.01:
+                        remise_finale = remise_manual
+                    else:
+                        remise_finale = remise_euros_calc
                     
-                    ppgc_ht = prix_apres_remise * coeff_val if coeff_val != 0 else 0
+                    prix_apres_remise = row['Prix Net HT'] - remise_finale
+                    ppgc_ht = prix_apres_remise * coeff if coeff != 0 else 0
                     ppgc_ttc = ppgc_ht * 1.2
-                    prix_net_net = prix_apres_remise - (prix_apres_remise * rfa_val / 100)
+                    prix_net_net = prix_apres_remise - (prix_apres_remise * rfa / 100)
                     
                     st.write("**Résultats:**")
                     st.write(f"Prix après remise: {prix_apres_remise:.2f}€")
@@ -601,6 +589,32 @@ def main():
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔄 Appliquer les modifications", type="primary"):
+                # CORRECTION : Récupérer les valeurs depuis les widgets
+                modified_articles = st.session_state['selected_articles'].copy()
+                
+                for idx in modified_articles.index:
+                    # Récupérer les valeurs des widgets via session_state
+                    remise_pct = st.session_state.get(f"remise_pct_{idx}", modified_articles.loc[idx, 'Remise (%)'])
+                    remise_manual = st.session_state.get(f"remise_euros_{idx}", modified_articles.loc[idx, 'Remise (€)'])
+                    coeff = st.session_state.get(f"coeff_{idx}", modified_articles.loc[idx, 'Coeff'])
+                    rfa = st.session_state.get(f"rfa_{idx}", modified_articles.loc[idx, 'RFA'])
+                    
+                    # Calculer la remise en euros à partir du pourcentage
+                    remise_euros_calc = modified_articles.loc[idx, 'Prix Brut HT'] * remise_pct / 100
+                    
+                    # Prioriser la saisie manuelle si elle diffère du calcul auto
+                    if abs(remise_manual - remise_euros_calc) > 0.01:
+                        modified_articles.loc[idx, 'Remise (€)'] = remise_manual
+                        # Recalculer le pourcentage
+                        if modified_articles.loc[idx, 'Prix Brut HT'] != 0:
+                            modified_articles.loc[idx, 'Remise (%)'] = (remise_manual / modified_articles.loc[idx, 'Prix Brut HT']) * 100
+                    else:
+                        modified_articles.loc[idx, 'Remise (%)'] = remise_pct
+                        modified_articles.loc[idx, 'Remise (€)'] = remise_euros_calc
+                    
+                    modified_articles.loc[idx, 'Coeff'] = coeff
+                    modified_articles.loc[idx, 'RFA'] = rfa
+                
                 # Recalculer toutes les valeurs dérivées
                 st.session_state['selected_articles'] = calculate_derived_values(modified_articles)
                 st.success("✅ Modifications appliquées avec succès!")
@@ -619,8 +633,8 @@ def main():
         
         # Colonnes à afficher
         display_columns = ['Libellé article', 'Version', 'Code EDI', 'Prix Brut HT', 
-                          'Remise (%)', 'Remise (€)', 'Prix Net HT', 'Prix net après remise', 
-                          'Coeff', 'PPGC TTC', 'RFA', 'Prix Net Net']
+                        'Remise (%)', 'Remise (€)', 'Prix Net HT', 'Prix net après remise', 
+                        'Coeff', 'PPGC TTC', 'RFA', 'Prix Net Net']
         
         # Afficher le tableau
         st.dataframe(
@@ -647,7 +661,6 @@ def main():
         # Affichage des métriques
         st.markdown("### 📊 Résumé de la proposition")
         
-        # col1, col2, col3 = st.columns(3)
         col1 = st.columns(1)[0]
         
         with col1:
