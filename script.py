@@ -505,137 +505,161 @@ def main():
     if not st.session_state['selected_articles'].empty:
         st.markdown("---")
         st.subheader("🛍️ Panier de sélection avec ajustements commerciaux")
-        
-        st.info("💡 Vous pouvez modifier les colonnes Remise (%) ou Remise (€), Coeff, RFA. La remise est calculée sur le Prix Brut HT.")
-        
-        # Interface d'édition
-        # CORRECTION : On travaille directement sur la session_state
-        
-        # Créer des colonnes pour l'édition
+
+        st.info("💡 Choisissez le mode de saisie de la remise (en % ou en €) pour chaque article. "
+                "Les valeurs sont mémorisées et les calculs se mettent à jour automatiquement.")
+
+        # Parcours des articles du panier
         for idx, row in st.session_state['selected_articles'].iterrows():
             with st.expander(f"📝 {row['Libellé article']} - {row['Version']}", expanded=False):
-                col1, col2, col3, col4, col5 = st.columns(5)
-                
+
+                # Déterminer/initialiser le mode de saisie (par défaut : % si non nul, sinon €)
+                mode_key = f"remise_mode_{idx}"
+                if mode_key not in st.session_state:
+                    st.session_state[mode_key] = "En %" if float(row.get('Remise (%)', 0) or 0) > 0 else "En €"
+
+                # Sélecteur horizontal du mode
+                mode = st.radio(
+                    "Mode de saisie de la remise",
+                    options=["En %", "En €"],
+                    horizontal=True,
+                    key=mode_key,
+                    help="Choisissez comment saisir la remise pour cet article."
+                )
+
+                # Mise en page des champs
+                col1, col2, col3, col4, col5 = st.columns([1.2, 1.5, 1.5, 1.2, 1.6])
+
                 with col1:
-                    st.write(f"**Prix Brut HT:** {row['Prix Brut HT']:.2f}€")
-                    st.write(f"**Prix Net HT:** {row['Prix Net HT']:.2f}€")
-                
+                    st.write(f"**Prix Brut HT :** {float(row['Prix Brut HT']):.2f}€")
+                    st.write(f"**Prix Net HT :** {float(row['Prix Net HT']):.2f}€")
+
+                # --- Saisie de la remise selon le mode ---
                 with col2:
-                    # Champ Remise (%)
-                    remise_pct = st.number_input(
-                        "Remise (%)",
-                        min_value=0.0,
-                        max_value=100.0,
-                        value=float(row['Remise (%)']),
-                        step=0.5,
-                        key=f"remise_pct_{idx}",
-                        help="Remise en % du Prix Brut HT"
-                    )
-                    
-                    # Calcul automatique de Remise (€) à partir du Prix Brut HT
-                    remise_euros_calc = row['Prix Brut HT'] * remise_pct / 100
-                
+                    if mode == "En %":
+                        # Champ Remise (%) actif
+                        pct_key = f"remise_pct_{idx}"
+                        current_pct = float(st.session_state['selected_articles'].at[idx, 'Remise (%)'])
+                        new_pct = st.number_input(
+                            "Remise (%)",
+                            min_value=0.0, max_value=100.0, step=0.5,
+                            value=current_pct,
+                            key=pct_key,
+                            help="Remise (en %) du Prix Brut HT"
+                        )
+                        # MÀJ du % en session_state
+                        st.session_state['selected_articles'].at[idx, 'Remise (%)'] = new_pct
+                        # Calcul de la remise en € à partir du % (priorité au % si non nul)
+                        euros_from_pct = float(st.session_state['selected_articles'].at[idx, 'Prix Brut HT']) * new_pct / 100.0
+                        st.session_state['selected_articles'].at[idx, 'Remise (€)'] = euros_from_pct
+
+                    else:  # mode == "En €"
+                        # Champ Remise (€) actif
+                        euros_key = f"remise_euros_{idx}"
+                        current_euros = float(st.session_state['selected_articles'].at[idx, 'Remise (€)'])
+                        new_euros = st.number_input(
+                            "Remise (€)",
+                            min_value=0.0, step=0.1,
+                            value=current_euros,
+                            key=euros_key,
+                            help="Montant de la remise en euros"
+                        )
+                        # MÀJ du € en session_state
+                        st.session_state['selected_articles'].at[idx, 'Remise (€)'] = new_euros
+                        # Forcer le % à 0 pour éviter tout conflit lors des recalculs
+                        st.session_state['selected_articles'].at[idx, 'Remise (%)'] = 0.0
+
                 with col3:
-                    # Option pour saisir directement en euros
-                    remise_manual = st.number_input(
-                        "Remise (€)",
-                        min_value=0.0,
-                        value=float(row['Remise (€)']) if row['Remise (€)'] != 0 else remise_euros_calc,
-                        step=0.1,
-                        key=f"remise_euros_{idx}",
-                        help="Remise en € (calculée sur Prix Brut HT)"
-                    )
-                
+                    # Affiche le champ complémentaire en lecture seule selon le mode
+                    if mode == "En %":
+                        # Remise (€) calculée automatiquement et affichée en RO
+                        remise_calculee = float(st.session_state['selected_articles'].at[idx, 'Remise (€)'])
+                        st.number_input(
+                            "Remise (€) (calculée)",
+                            min_value=0.0, step=0.1,
+                            value=remise_calculee,
+                            key=f"remise_euros_ro_{idx}",
+                            disabled=True,
+                            help="Calculée automatiquement à partir de la remise en %"
+                        )
+                    else:
+                        # Remise (%) désactivée et forcée à 0
+                        st.number_input(
+                            "Remise (%) (désactivée)",
+                            min_value=0.0, max_value=100.0, step=0.5,
+                            value=0.0,
+                            key=f"remise_pct_ro_{idx}",
+                            disabled=True,
+                            help="Désactivée en mode 'En €' (forcée à 0)"
+                        )
+
                 with col4:
+                    # Coefficient
                     coeff = st.number_input(
                         "Coefficient",
                         min_value=0.0,
-                        value=float(row['Coeff']) if row['Coeff'] != 0 else 1.0,
+                        value=float(row['Coeff']) if float(row['Coeff']) != 0 else 1.0,
                         step=0.1,
                         key=f"coeff_{idx}",
                         help="Coefficient multiplicateur pour le PPGC"
                     )
-                    
+                    st.session_state['selected_articles'].at[idx, 'Coeff'] = coeff
+
+                    # RFA
                     rfa = st.number_input(
                         "RFA (%)",
-                        min_value=0.0,
-                        max_value=100.0,
+                        min_value=0.0, max_value=100.0,
                         value=float(row['RFA']),
                         step=1.0,
                         key=f"rfa_{idx}",
                         help="Pourcentage RFA à appliquer"
                     )
-                
+                    st.session_state['selected_articles'].at[idx, 'RFA'] = rfa
+
                 with col5:
-                    # Calculs en temps réel pour l'affichage
-                    # Prioriser la saisie manuelle si elle diffère du calcul auto
-                    if abs(remise_manual - remise_euros_calc) > 0.01:
-                        remise_finale = remise_manual
-                    else:
-                        remise_finale = remise_euros_calc
-                    
-                    prix_apres_remise = row['Prix Net HT'] - remise_finale
-                    ppgc_ht = prix_apres_remise * coeff if coeff != 0 else 0
-                    ppgc_ttc = ppgc_ht * 1.2
-                    prix_net_net = prix_apres_remise - (prix_apres_remise * rfa / 100)
-                    
-                    st.write("**Résultats:**")
-                    st.write(f"Prix après remise: {prix_apres_remise:.2f}€")
-                    st.write(f"PPGC HT: {ppgc_ht:.2f}€")
-                    st.write(f"PPGC TTC: {ppgc_ttc:.2f}€")
-                    st.write(f"Prix Net Net: {prix_net_net:.2f}€")
-        
-        # Bouton pour appliquer les modifications
+                    # Recalcule d'aperçu en temps réel (en respectant la logique globale)
+                    current_remise_euros = float(st.session_state['selected_articles'].at[idx, 'Remise (€)'])
+                    current_remise_autre = float(st.session_state['selected_articles'].at[idx, 'Remise autre (€)']) if 'Remise autre (€)' in st.session_state['selected_articles'].columns else 0.0
+                    current_coeff = float(st.session_state['selected_articles'].at[idx, 'Coeff'])
+                    current_rfa = float(st.session_state['selected_articles'].at[idx, 'RFA'])
+
+                    prix_net_ht = float(st.session_state['selected_articles'].at[idx, 'Prix Net HT'])
+                    prix_apres_remise = prix_net_ht - current_remise_euros - (current_remise_autre or 0.0)
+                    ppgc_ht = prix_apres_remise * current_coeff if current_coeff != 0 else 0.0
+                    ppgc_ttc = ppgc_ht * 1.20
+                    prix_net_net = prix_apres_remise - (prix_apres_remise * current_rfa / 100.0) if current_rfa != 0 else prix_apres_remise
+
+                    st.write("**Résultats :**")
+                    st.write(f"Prix après remise : {prix_apres_remise:.2f}€")
+                    st.write(f"PPGC HT : {ppgc_ht:.2f}€")
+                    st.write(f"PPGC TTC : {ppgc_ttc:.2f}€")
+                    st.write(f"Prix Net Net : {prix_net_net:.2f}€")
+
+        # Bouton pour recalculer toutes les valeurs dérivées
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🔄 Appliquer les modifications", type="primary"):
-                # CORRECTION : Récupérer les valeurs depuis les widgets
-                modified_articles = st.session_state['selected_articles'].copy()
-                
-                for idx in modified_articles.index:
-                    # Récupérer les valeurs des widgets via session_state
-                    remise_pct = st.session_state.get(f"remise_pct_{idx}", modified_articles.loc[idx, 'Remise (%)'])
-                    remise_manual = st.session_state.get(f"remise_euros_{idx}", modified_articles.loc[idx, 'Remise (€)'])
-                    coeff = st.session_state.get(f"coeff_{idx}", modified_articles.loc[idx, 'Coeff'])
-                    rfa = st.session_state.get(f"rfa_{idx}", modified_articles.loc[idx, 'RFA'])
-                    
-                    # Calculer la remise en euros à partir du pourcentage
-                    remise_euros_calc = modified_articles.loc[idx, 'Prix Brut HT'] * remise_pct / 100
-                    
-                    # Prioriser la saisie manuelle si elle diffère du calcul auto
-                    if abs(remise_manual - remise_euros_calc) > 0.01:
-                        modified_articles.loc[idx, 'Remise (€)'] = remise_manual
-                        # Recalculer le pourcentage
-                        if modified_articles.loc[idx, 'Prix Brut HT'] != 0:
-                            modified_articles.loc[idx, 'Remise (%)'] = (remise_manual / modified_articles.loc[idx, 'Prix Brut HT']) * 100
-                    else:
-                        modified_articles.loc[idx, 'Remise (%)'] = remise_pct
-                        modified_articles.loc[idx, 'Remise (€)'] = remise_euros_calc
-                    
-                    modified_articles.loc[idx, 'Coeff'] = coeff
-                    modified_articles.loc[idx, 'RFA'] = rfa
-                
-                # Recalculer toutes les valeurs dérivées
-                st.session_state['selected_articles'] = calculate_derived_values(modified_articles)
-                st.success("✅ Modifications appliquées avec succès!")
+            if st.button("🔄 Recalculer tout", type="primary"):
+                # Respect de la priorité : si Remise (%) > 0, on recalcule Remise (€) depuis Prix Brut HT
+                st.session_state['selected_articles'] = calculate_derived_values(st.session_state['selected_articles'])
+                st.success("✅ Tous les calculs ont été mis à jour!")
                 st.rerun()
-        
+
         with col2:
             if st.button("❌ Supprimer tous les articles", type="secondary"):
                 st.session_state['selected_articles'] = pd.DataFrame()
                 st.rerun()
-        
+
         # Affichage du tableau récapitulatif
         st.subheader("📊 Récapitulatif des articles sélectionnés")
-        
-        # Recalculer pour l'affichage
+
+        # Recalculer pour l'affichage (garde la priorité au % si non nul)
         display_df = calculate_derived_values(st.session_state['selected_articles'])
-        
+
         # Colonnes à afficher
-        display_columns = ['Libellé article', 'Version', 'Code EDI', 'Prix Brut HT', 
-                        'Remise (%)', 'Remise (€)', 'Prix Net HT', 'Prix net après remise', 
+        display_columns = ['Libellé article', 'Version', 'Code EDI', 'Prix Brut HT',
+                        'Remise (%)', 'Remise (€)', 'Prix Net HT', 'Prix net après remise',
                         'Coeff', 'PPGC TTC', 'RFA', 'Prix Net Net']
-        
+
         # Afficher le tableau
         st.dataframe(
             display_df[display_columns].style.format({
@@ -651,64 +675,35 @@ def main():
             }),
             use_container_width=True
         )
-        
-        # Calculs et résumé
-        total_articles = len(display_df)
-        total_prix_net_net = display_df['Prix Net Net'].sum()
-        total_ppgc_ttc = display_df['PPGC TTC'].sum()
-        total_remise = display_df['Remise (€)'].sum()
-        
-        # Affichage des métriques
+
+        # Résumé & PDF (inchangé)
         st.markdown("### 📊 Résumé de la proposition")
-        
         col1 = st.columns(1)[0]
-        
+        total_articles = len(display_df)
         with col1:
-            st.metric(
-                label="📦 Nombre d'articles",
-                value=total_articles
-            )
-        
-        # with col2:
-        #     st.metric(
-        #         label="💰 Total PPGC TTC",
-        #         value=f"{total_ppgc_ttc:.2f}€"
-        #     )
-        
-        # with col3:
-        #     st.metric(
-        #         label="🎁 Remise totale accordée",
-        #         value=f"{total_remise:.2f}€"
-        #     )
-        
-        # Génération du PDF
+            st.metric(label="📦 Nombre d'articles", value=total_articles)
+
         st.markdown("---")
         st.subheader("📄 Génération de la proposition")
-        
+
         col1, col2 = st.columns(2)
-        
         with col1:
             client_info = st.text_input(
                 "👤 Nom du client (optionnel):",
                 placeholder="Nom de l'opticien...",
                 help="Ce nom apparaîtra sur la proposition PDF"
             )
-        
+
         with col2:
-            st.write("")  # Espacement
-            st.write("")  # Espacement
-            
+            st.write("")  # Espacements
+            st.write("")
             if st.button("📄 Générer la proposition PDF", type="primary", use_container_width=True):
                 try:
                     buffer = BytesIO()
                     proposal_number = generate_proposal_number()
-                    
                     with st.spinner("Génération du PDF en cours..."):
                         generate_pdf(st.session_state['selected_articles'], proposal_number, buffer, client_info)
-                    
                     st.success("✅ PDF généré avec succès!")
-                    
-                    # Bouton de téléchargement
                     st.download_button(
                         label="📥 Télécharger le PDF",
                         data=buffer.getvalue(),
@@ -716,7 +711,6 @@ def main():
                         mime="application/pdf",
                         type="primary"
                     )
-                    
                 except Exception as e:
                     st.error(f"❌ Erreur lors de la génération du PDF: {str(e)}")
 
