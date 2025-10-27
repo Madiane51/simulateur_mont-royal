@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -79,21 +80,26 @@ def get_base64_image(image_path):
 
 # Fonction pour calculer les valeurs dérivées
 def calculate_derived_values(df):
-    """Calcule les valeurs dérivées selon les formules Excel"""
+    """Calcule les valeurs dérivées - NOUVELLE LOGIQUE"""
     df = df.copy()
     
+    # LOGIQUE MODIFIÉE : La remise est calculée à partir du Prix Brut HT
+    # Si Remise (%) est renseignée, calculer Remise (€) à partir du Prix Brut HT
+    for idx in df.index:
+        if pd.notna(df.loc[idx, 'Remise (%)']) and df.loc[idx, 'Remise (%)'] != 0:
+            df.loc[idx, 'Remise (€)'] = df.loc[idx, 'Prix Brut HT'] * df.loc[idx, 'Remise (%)'] / 100
+    
     # Calcul Prix net après remise (colonne I)
-    # =SI(ESTNUM(G2);F2-G2;SI(ESTNUM(H2);F2-H2))
+    # Prix Net HT reste tel quel (colonne du fichier Excel)
+    # Prix net après remise = Prix Net HT - Remise (€) - Remise autre (€)
     df['Prix net après remise'] = df.apply(lambda row: 
-        row['Prix Net HT'] - row['Remise (€)'] if pd.notna(row['Remise (€)']) and row['Remise (€)'] != 0
-        else row['Prix Net HT'] - row['Remise autre (€)'] if pd.notna(row['Remise autre (€)']) and row['Remise autre (€)'] != 0
-        else row['Prix Net HT'], axis=1)
+        row['Prix Net HT'] - row['Remise (€)'] - (row['Remise autre (€)'] if pd.notna(row['Remise autre (€)']) else 0),
+        axis=1)
     
     # Calcul PPGC HT (colonne K)
     # =I2*J2 (si Coeff est renseigné)
     df['PPGC HT'] = df.apply(lambda row:
         row['Prix net après remise'] * row['Coeff'] if pd.notna(row['Coeff']) and row['Coeff'] != 0
-        else row['PPGC HT'] if 'PPGC HT' in df.columns
         else 0, axis=1)
     
     # Calcul PPGC TTC (on ajoute la TVA de 20%)
@@ -106,7 +112,7 @@ def calculate_derived_values(df):
         else row['Prix net après remise'], axis=1)
     
     # Calcul des marges
-    df['Marge brute (€)'] = df['PPGC HT'] - df['Prix Net HT']
+    df['Marge brute (€)'] = df['PPGC HT'] - df['Prix Brut HT']
     df['Marge nette (€)'] = df['PPGC HT'] - df['Prix net après remise']
     
     # Calcul Taux de marque
@@ -115,12 +121,12 @@ def calculate_derived_values(df):
     
     return df
 
-# Fonction pour générer le PDF amélioré (version modifiée)
+# Fonction pour générer le PDF amélioré
 def generate_pdf(df, proposal_number, buffer, client_info=None):
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm)
     styles = getSampleStyleSheet()
     story = []
-
+    
     # Logo (si disponible)
     logo_path = "mont-royal-logo.jpg"
     if os.path.exists(logo_path):
@@ -131,7 +137,7 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
             story.append(Spacer(1, 12))
         except:
             pass
-
+    
     # En-tête avec style amélioré
     title_style = ParagraphStyle(
         'CustomTitle',
@@ -146,7 +152,7 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
     story.append(Paragraph("Proposition Commerciale", title_style))
     story.append(Paragraph("Mont-Royal - Manufacture française d'optique", styles['Heading3']))
     story.append(Spacer(1, 20))
-
+    
     # Informations de la proposition
     info_style = ParagraphStyle(
         'InfoStyle',
@@ -164,10 +170,9 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
         story.append(Paragraph(f"<b>Client :</b> {client_info}", info_style))
     
     story.append(Spacer(1, 20))
-
+    
     # Traitement par catégorie
     categories = df['Catégorie produit'].unique()
-
     for category in categories:
         cat_df = df[df['Catégorie produit'] == category]
         if not cat_df.empty:
@@ -186,33 +191,39 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
             
             story.append(Paragraph(f"Catégorie : {category}", category_style))
             story.append(Spacer(1, 10))
-
-            # Données du tableau - MODIFICATION ICI : Code EDI remplacé par Marge nette
-            table_data = [['Libellé article', 'Version', 'Prix Net HT', 'Remise (€)', 'Prix après remise', 'PPGC TTC', 'Marge nette', 'RFA', 'Prix Net Net']]
+            
+            # Données du tableau - Prix Brut HT, Remise (%), Prix Net HT
+            table_data = [['Libellé article', 'Version', 'Remise (%)', 'Remise (€)',  'Prix Net HT', 'Prix après remise', 'PPGC TTC', 'Marge nette', 'RFA', 'Prix Net Net']]
             
             for _, row in cat_df.iterrows():
                 # Gestion du wrapping pour les libellés longs
                 libelle_para = Paragraph(str(row['Libellé article']), styles['Normal'])
+                
+                # Calculer le pourcentage de remise pour l'affichage
+                remise_pct = (row['Remise (€)'] / row['Prix Brut HT'] * 100) if row['Prix Brut HT'] != 0 else 0
+                
                 table_data.append([
                     libelle_para,
                     str(row['Version']),
+                    # f"{row['Prix Brut HT']:.2f}€",
+                    f"{remise_pct:.1f}%" if remise_pct > 0 else "-",
+                    f"{row['Remise (€)']:.2f}€" if row['Remise (€)'] > 0 else "-",
                     f"{row['Prix Net HT']:.2f}€",
-                    f"{row['Remise (€)']:.2f}€" if pd.notna(row['Remise (€)']) else "-",
                     f"{row['Prix net après remise']:.2f}€",
                     f"{row['PPGC TTC']:.2f}€",
-                    f"{row['Marge nette (€)']:.2f}€",  # NOUVELLE COLONNE : Marge nette
-                    f"{row['RFA']:.0f}%" if pd.notna(row['RFA']) else "-",
+                    f"{row['Marge nette (€)']:.2f}€",
+                    f"{row['RFA']:.0f}%" if pd.notna(row['RFA']) and row['RFA'] != 0 else "-",
                     f"{row['Prix Net Net']:.2f}€"
                 ])
-
-            # Création du tableau avec largeurs adaptées - MODIFICATION DES LARGEURS
-            table = Table(table_data, colWidths=[3.5*cm, 2*cm, 2*cm, 2*cm, 2.7*cm, 2*cm, 2*cm, 1.5*cm, 2*cm])
+            
+            # Création du tableau avec largeurs adaptées
+            table = Table(table_data, colWidths=[3*cm, 1.8*cm, 1.8*cm, 1.8*cm, 2*cm, 2.5*cm, 2*cm, 2*cm, 1.5*cm, 2*cm])
             table.setStyle(TableStyle([
                 # En-tête
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f68b1f")),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
                 ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
                 
@@ -220,7 +231,7 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
                 ('BACKGROUND', (0, 1), (-1, -1), colors.white),
                 ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
                 ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 1), (-1, -1), 'MIDDLE'),
                 
@@ -234,7 +245,7 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
             
             story.append(table)
             story.append(Spacer(1, 15))
-
+    
     # Pied de page
     story.append(Spacer(1, 30))
     footer_style = ParagraphStyle(
@@ -248,7 +259,7 @@ def generate_pdf(df, proposal_number, buffer, client_info=None):
     
     story.append(Paragraph("Mont-Royal - Manufacture française d'optique", footer_style))
     story.append(Paragraph("Cette proposition est valable 30 jours à compter de la date d'émission", footer_style))
-
+    
     # Construction du PDF
     doc.build(story)
 
@@ -277,6 +288,7 @@ def initialize_dataframe_columns(df):
         'Prix Brut HT': 0.0,
         'Prix Net HT': 0.0,
         'Remise (€)': 0.0,
+        'Remise (%)': 0.0,
         'Remise autre (€)': 0.0,
         'Prix net après remise': 0.0,
         'Coeff': 1.0,
@@ -294,7 +306,7 @@ def initialize_dataframe_columns(df):
             df[col] = default_value
     
     # Conversion des types
-    numeric_columns = ['Prix Brut HT', 'Prix Net HT', 'Remise (€)', 'Remise autre (€)', 
+    numeric_columns = ['Prix Brut HT', 'Prix Net HT', 'Remise (€)', 'Remise (%)', 'Remise autre (€)', 
                       'Prix net après remise', 'Coeff', 'PPGC HT', 'PPGC TTC', 
                       'Marge brute (€)', 'Marge nette (€)', 'Taux de marque', 'RFA', 'Prix Net Net']
     
@@ -308,7 +320,7 @@ def initialize_dataframe_columns(df):
 def validate_dataframe(df):
     """Valide que le DataFrame contient les colonnes essentielles"""
     essential_columns = [
-        'Catégorie produit', 'Libellé article', 'Version', 'Code EDI', 'Prix Net HT'
+        'Catégorie produit', 'Libellé article', 'Version', 'Code EDI', 'Prix Brut HT', 'Prix Net HT'
     ]
     
     missing_columns = [col for col in essential_columns if col not in df.columns]
@@ -326,13 +338,13 @@ def main():
         <p>Manufacture française d'optique - Outil de génération de propositions commerciales</p>
     </div>
     """, unsafe_allow_html=True)
-
+    
     # Initialisation des variables de session
     if 'articles_data' not in st.session_state:
         st.session_state['articles_data'] = load_default_data()
     if 'selected_articles' not in st.session_state:
         st.session_state['selected_articles'] = pd.DataFrame()
-
+    
     # Sidebar - Chargement de fichier
     with st.sidebar:
         st.header("📂 Gestion des données")
@@ -354,7 +366,7 @@ def main():
                     st.error("❌ Format de fichier incorrect")
             except Exception as e:
                 st.error(f"❌ Erreur lors du chargement: {str(e)}")
-
+        
         # Informations sur les données
         if not st.session_state['articles_data'].empty:
             st.info(f"📊 **{len(st.session_state['articles_data'])}** articles en base")
@@ -365,20 +377,20 @@ def main():
                 st.write("**Répartition par catégorie:**")
                 for cat, count in categories.items():
                     st.write(f"• {cat}: {count} articles")
-
+        
         # Actions sur la sélection
         st.header("🛍️ Actions")
         if not st.session_state['selected_articles'].empty:
             if st.button("🗑️ Vider le panier", type="secondary"):
                 st.session_state['selected_articles'] = pd.DataFrame()
                 st.rerun()
-
+    
     # Contenu principal
     if st.session_state['articles_data'].empty:
         st.warning("⚠️ Aucune donnée chargée. Veuillez charger un fichier Excel dans la barre latérale.")
         st.info("💡 L'application recherche automatiquement les fichiers: articles.xlsx, data.xlsx, mont_royal.xlsx, base_donnees.xlsx")
         return
-
+    
     # Filtres de recherche
     with st.expander("🔍 Filtres de recherche", expanded=True):
         col1, col2, col3 = st.columns(3)
@@ -405,7 +417,7 @@ def main():
                 placeholder="Code EDI...",
                 help="Recherche exacte ou partielle"
             )
-
+        
         # Application des filtres
         df_filtered = st.session_state['articles_data'].copy()
         
@@ -423,10 +435,10 @@ def main():
             df_filtered = df_filtered[
                 df_filtered['Code EDI'].astype(str).str.contains(edi_filter, case=False, na=False)
             ]
-
+        
         # Affichage du nombre de résultats
         st.info(f"📋 {len(df_filtered)} article(s) trouvé(s)")
-
+    
     # Affichage des articles disponibles
     if not df_filtered.empty:
         st.subheader("📄 Articles disponibles")
@@ -439,6 +451,7 @@ def main():
         gb.configure_default_column(enablePivot=True, enableValue=True, enableRowGroup=True)
         
         # Mise en forme des colonnes
+        gb.configure_column("Prix Brut HT", type=["numericColumn", "numberColumnFilter", "customNumericFormat"], valueFormatter="data.value.toFixed(2) + '€'")
         gb.configure_column("Prix Net HT", type=["numericColumn", "numberColumnFilter", "customNumericFormat"], valueFormatter="data.value.toFixed(2) + '€'")
         gb.configure_column("PPGC TTC", type=["numericColumn", "numberColumnFilter", "customNumericFormat"], valueFormatter="data.value.toFixed(2) + '€'")
         gb.configure_column("Marge nette (€)", type=["numericColumn", "numberColumnFilter", "customNumericFormat"], valueFormatter="data.value.toFixed(2) + '€'")
@@ -463,7 +476,7 @@ def main():
                     has_selection = not selected_rows.empty
                 else:
                     has_selection = bool(selected_rows)
-
+                
                 if has_selection:
                     selected_df = pd.DataFrame(selected_rows)
                     
@@ -488,13 +501,13 @@ def main():
                     st.rerun()
                 else:
                     st.warning("⚠️ Veuillez sélectionner au moins un article")
-
+    
     # Affichage du panier avec modification possible
     if not st.session_state['selected_articles'].empty:
         st.markdown("---")
         st.subheader("🛍️ Panier de sélection avec ajustements commerciaux")
         
-        st.info("💡 Vous pouvez modifier les colonnes Remise (€), Coeff, RFA pour appliquer des conditions commerciales spécifiques")
+        st.info("💡 Vous pouvez modifier les colonnes Remise (%) ou Remise (€), Coeff, RFA. La remise est calculée sur le Prix Brut HT.")
         
         # Interface d'édition
         modified_articles = st.session_state['selected_articles'].copy()
@@ -502,21 +515,49 @@ def main():
         # Créer des colonnes pour l'édition
         for idx, row in modified_articles.iterrows():
             with st.expander(f"📝 {row['Libellé article']} - {row['Version']}", expanded=False):
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
                 
                 with col1:
+                    st.write(f"**Prix Brut HT:** {row['Prix Brut HT']:.2f}€")
                     st.write(f"**Prix Net HT:** {row['Prix Net HT']:.2f}€")
-                    remise = st.number_input(
-                        "Remise (€)",
-                        min_value=0.0,
-                        value=float(row['Remise (€)']),
-                        step=0.1,
-                        key=f"remise_{idx}",
-                        help="Remise en euros à appliquer"
-                    )
-                    modified_articles.loc[idx, 'Remise (€)'] = remise
+                    # st.caption("(valeurs du fichier)")
                 
                 with col2:
+                    # Champ Remise (%)
+                    remise_pct = st.number_input(
+                        "Remise (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(row['Remise (%)']),
+                        step=0.5,
+                        key=f"remise_pct_{idx}",
+                        help="Remise en % du Prix Brut HT"
+                    )
+                    modified_articles.loc[idx, 'Remise (%)'] = remise_pct
+                    
+                    # Calcul automatique de Remise (€) à partir du Prix Brut HT
+                    remise_euros_calc = row['Prix Brut HT'] * remise_pct / 100
+                    # st.caption(f"= {remise_euros_calc:.2f}€")
+                
+                with col3:
+                    # Option pour saisir directement en euros
+                    remise_manual = st.number_input(
+                        "Remise (€)",
+                        min_value=0.0,
+                        value=float(row['Remise (€)']) if row['Remise (€)'] != 0 else remise_euros_calc,
+                        step=0.1,
+                        key=f"remise_euros_{idx}",
+                        help="Remise en € (calculée sur Prix Brut HT)"
+                    )
+                    modified_articles.loc[idx, 'Remise (€)'] = remise_manual
+                    
+                    # Recalculer le pourcentage si modifié manuellement
+                    if abs(remise_manual - remise_euros_calc) > 0.01:
+                        if row['Prix Brut HT'] != 0:
+                            new_pct = (remise_manual / row['Prix Brut HT']) * 100
+                            modified_articles.loc[idx, 'Remise (%)'] = new_pct
+                
+                with col4:
                     coeff = st.number_input(
                         "Coefficient",
                         min_value=0.0,
@@ -526,8 +567,7 @@ def main():
                         help="Coefficient multiplicateur pour le PPGC"
                     )
                     modified_articles.loc[idx, 'Coeff'] = coeff
-                
-                with col3:
+                    
                     rfa = st.number_input(
                         "RFA (%)",
                         min_value=0.0,
@@ -539,9 +579,10 @@ def main():
                     )
                     modified_articles.loc[idx, 'RFA'] = rfa
                 
-                with col4:
+                with col5:
                     # Calcul en temps réel
-                    prix_apres_remise = row['Prix Net HT'] - remise
+                    remise_finale = modified_articles.loc[idx, 'Remise (€)']
+                    prix_apres_remise = row['Prix Net HT'] - remise_finale
                     ppgc_ht = prix_apres_remise * coeff if coeff != 0 else 0
                     ppgc_ttc = ppgc_ht * 1.2
                     prix_net_net = prix_apres_remise - (prix_apres_remise * rfa / 100)
@@ -565,7 +606,7 @@ def main():
             if st.button("❌ Supprimer tous les articles", type="secondary"):
                 st.session_state['selected_articles'] = pd.DataFrame()
                 st.rerun()
-
+        
         # Affichage du tableau récapitulatif
         st.subheader("📊 Récapitulatif des articles sélectionnés")
         
@@ -573,14 +614,17 @@ def main():
         display_df = calculate_derived_values(st.session_state['selected_articles'])
         
         # Colonnes à afficher
-        display_columns = ['Libellé article', 'Version', 'Code EDI', 'Prix Net HT', 
-                          'Remise (€)', 'Prix net après remise', 'Coeff', 'PPGC TTC', 'RFA', 'Prix Net Net']
+        display_columns = ['Libellé article', 'Version', 'Code EDI', 'Prix Brut HT', 
+                          'Remise (%)', 'Remise (€)', 'Prix Net HT', 'Prix net après remise', 
+                          'Coeff', 'PPGC TTC', 'RFA', 'Prix Net Net']
         
         # Afficher le tableau
         st.dataframe(
             display_df[display_columns].style.format({
-                'Prix Net HT': '{:.2f}€',
+                'Prix Brut HT': '{:.2f}€',
+                'Remise (%)': '{:.1f}%',
                 'Remise (€)': '{:.2f}€',
+                'Prix Net HT': '{:.2f}€',
                 'Prix net après remise': '{:.2f}€',
                 'Coeff': '{:.2f}',
                 'PPGC TTC': '{:.2f}€',
@@ -589,11 +633,12 @@ def main():
             }),
             use_container_width=True
         )
-
+        
         # Calculs et résumé
         total_articles = len(display_df)
         total_prix_net_net = display_df['Prix Net Net'].sum()
         total_ppgc_ttc = display_df['PPGC TTC'].sum()
+        total_remise = display_df['Remise (€)'].sum()
         
         # Affichage des métriques
         st.markdown("### 📊 Résumé de la proposition")
@@ -615,10 +660,10 @@ def main():
         
         # with col3:
         #     st.metric(
-        #         label="💳 Total Prix Net Net",
-        #         value=f"{total_prix_net_net:.2f}€"
+        #         label="🎁 Remise totale accordée",
+        #         value=f"{total_remise:.2f}€"
         #     )
-
+        
         # Génération du PDF
         st.markdown("---")
         st.subheader("📄 Génération de la proposition")
