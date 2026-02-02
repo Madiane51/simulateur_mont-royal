@@ -11,6 +11,7 @@ from reportlab.lib.units import cm
 from datetime import datetime
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 import base64
+import math
 
 # Configuration de la page
 st.set_page_config(
@@ -70,6 +71,14 @@ def generate_proposal_number():
     hour_minute = datetime.now().strftime("%H%M")
     return f"PROP-{today}-{hour_minute}"
 
+# Fonction utilitaire pour l'arrondi supérieur au centime
+def round_up_price(x):
+    if pd.isna(x) or x == 0:
+        return 0.0
+    # On arrondit d'abord à 4 décimales pour éviter les erreurs de flottants (ex: 10.00000001)
+    # Puis on applique le plafond au centime
+    return np.ceil(round(x, 4) * 100) / 100
+
 # Fonction pour encoder une image en base64
 def get_base64_image(image_path):
     if os.path.exists(image_path):
@@ -86,17 +95,15 @@ def calculate_derived_values(df):
     # Si Remise (%) est renseignée, calculer Remise (€) à partir du Prix Brut HT
     for idx in df.index:
         if pd.notna(df.loc[idx, 'Remise (%)']) and df.loc[idx, 'Remise (%)'] != 0:
-            df.loc[idx, 'Remise (€)'] = df.loc[idx, 'Prix Brut HT'] * df.loc[idx, 'Remise (%)'] / 100
+            val_remise = df.loc[idx, 'Prix Brut HT'] * df.loc[idx, 'Remise (%)'] / 100
+            df.loc[idx, 'Remise (€)'] = val_remise # L'arrondi se fera à la fin
     
     # Calcul Prix net après remise (colonne I)
-    # Prix Net HT reste tel quel (colonne du fichier Excel)
-    # Prix net après remise = Prix Net HT - Remise (€) - Remise autre (€)
     df['Prix net après remise'] = df.apply(lambda row: 
         row['Prix Net HT'] - row['Remise (€)'] - (row['Remise autre (€)'] if pd.notna(row['Remise autre (€)']) else 0),
         axis=1)
     
     # Calcul PPGC HT (colonne K)
-    # =I2*J2 (si Coeff est renseigné)
     df['PPGC HT'] = df.apply(lambda row:
         row['Prix net après remise'] * row['Coeff'] if pd.notna(row['Coeff']) and row['Coeff'] != 0
         else 0, axis=1)
@@ -105,7 +112,6 @@ def calculate_derived_values(df):
     df['PPGC TTC'] = df['PPGC HT'] * 1.20
     
     # Calcul Prix Net Net (colonne Q)
-    # =I2-(I2*P2) où P2 est en pourcentage
     df['Prix Net Net'] = df.apply(lambda row:
         row['Prix net après remise'] - (row['Prix net après remise'] * row['RFA'] / 100) if pd.notna(row['RFA']) and row['RFA'] != 0
         else row['Prix net après remise'], axis=1)
@@ -118,10 +124,36 @@ def calculate_derived_values(df):
     df['Taux de marque'] = df.apply(lambda row:
         (row['Marge nette (€)'] / row['PPGC HT']) * 100 if row['PPGC HT'] != 0 else 0, axis=1)
     
+    # --- APPLICATION DE L'ARRONDI SUPERIEUR (Ceiling) ---
+    monetary_cols = ['Prix Brut HT', 'Prix Net HT', 'Remise (€)', 'Remise autre (€)', 
+                     'Prix net après remise', 'PPGC HT', 'PPGC TTC', 
+                     'Marge brute (€)', 'Marge nette (€)', 'Prix Net Net']
+    
+    for col in monetary_cols:
+        if col in df.columns:
+            df[col] = df[col].apply(round_up_price)
+            
     return df
 
 # Fonction pour générer le PDF amélioré
 def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=None):
+    # On travaille sur une copie pour ne pas modifier l'affichage écran
+    df = df.copy()
+    
+    if 'Catégorie produit' in df.columns:
+        def classer_categorie(valeur):
+            # Convertir en chaine de caractères propre (sans espaces inutiles)
+            val_str = str(valeur).strip() if pd.notna(valeur) else ""
+            
+            # Si c'est exactement UO ou Progressif, on garde
+            if val_str in ['UO', 'Progressif']:
+                return val_str
+            # Sinon (vide, null, ou tout autre nom), on met dans Divers
+            else:
+                return "Divers"
+
+        df['Catégorie produit'] = df['Catégorie produit'].apply(classer_categorie)
+
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm)
     styles = getSampleStyleSheet()
     story = []
@@ -171,7 +203,10 @@ def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=Non
     story.append(Spacer(1, 20))
     
     # Traitement par catégorie
-    categories = df['Catégorie produit'].unique()
+    # On trie pour avoir un ordre cohérent (Divers sera souvent à la fin ou au début selon l'ordre alphabétique)
+    # Pour forcer l'ordre UO -> Progressif -> Divers, on peut faire un tri personnalisé, mais le tri alphabétique suffit souvent
+    categories = sorted(df['Catégorie produit'].unique())
+    
     for category in categories:
         cat_df = df[df['Catégorie produit'] == category]
         if not cat_df.empty:
@@ -191,7 +226,7 @@ def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=Non
             story.append(Paragraph(f"Catégorie : {category}", category_style))
             story.append(Spacer(1, 10))
             
-            # En-tête du tableau - adaptatif selon les modes de remise
+            # En-tête du tableau
             table_header = ['Libellé article', 'Version']
             
             # Déterminer si on doit afficher les colonnes de remise
@@ -206,11 +241,9 @@ def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=Non
                     else:
                         show_remise_euros = True
             else:
-                # Par défaut, afficher les deux si remise_modes n'est pas fourni
                 show_remise_pct = True
                 show_remise_euros = True
             
-            # Construire l'en-tête dynamiquement
             if show_remise_pct:
                 table_header.append('Remise (%)')
             if show_remise_euros:
@@ -220,7 +253,7 @@ def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=Non
             
             table_data = [table_header]
             
-            # Largeurs de colonnes adaptatives
+            # Largeurs de colonnes
             col_widths = [3*cm, 1.8*cm]
             if show_remise_pct:
                 col_widths.append(1.5*cm)
@@ -230,18 +263,17 @@ def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=Non
             
             for idx, row in cat_df.iterrows():
                 # Gestion du wrapping pour les libellés longs
-                libelle_para = Paragraph(str(row['Libellé article']), styles['Normal'])
+                libelle_text = str(row['Libellé article']) if pd.notna(row['Libellé article']) else ""
+                libelle_para = Paragraph(libelle_text, styles['Normal'])
                 
-                # Construction de la ligne selon le mode de remise
-                row_data = [libelle_para, str(row['Version'])]
+                version_text = str(row['Version']) if pd.notna(row['Version']) else ""
                 
-                # Récupérer le mode pour cet article
+                row_data = [libelle_para, version_text]
+                
                 mode = remise_modes.get(idx, "En %") if remise_modes else "En %"
                 
-                # Ajouter les colonnes de remise selon le mode et ce qui doit être affiché
                 if show_remise_pct:
                     if mode == "En %":
-                        # Utiliser directement la valeur de Remise (%) stockée
                         remise_pct = row['Remise (%)']
                         row_data.append(f"{remise_pct:.1f}%" if remise_pct > 0 else "-")
                     else:
@@ -249,12 +281,10 @@ def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=Non
                 
                 if show_remise_euros:
                     if mode == "En €":
-                        # Utiliser directement la valeur de Remise (€) stockée
                         row_data.append(f"{row['Remise (€)']:.2f}€" if row['Remise (€)'] > 0 else "-")
                     else:
                         row_data.append("-")
                 
-                # Ajouter les autres colonnes
                 row_data.extend([
                     f"{row['Prix Net HT']:.2f}€",
                     f"{row['Prix net après remise']:.2f}€",
@@ -266,30 +296,23 @@ def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=Non
                 
                 table_data.append(row_data)
             
-            # Création du tableau avec largeurs adaptées
+            # Création du tableau
             table = Table(table_data, colWidths=col_widths)
             table.setStyle(TableStyle([
-                # En-tête
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f68b1f")),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 8),
                 ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
-                
-                # Corps du tableau
                 ('BACKGROUND', (0, 1), (-1, -1), colors.white),
                 ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 7),
                 ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 1), (-1, -1), 'MIDDLE'),
-                
-                # Bordures
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
                 ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor("#f68b1f")),
-                
-                # Alternance de couleurs
                 ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
             ]))
             
@@ -310,7 +333,6 @@ def generate_pdf(df, proposal_number, buffer, client_info=None, remise_modes=Non
     story.append(Paragraph("Mont-Royal - Manufacture française d'optique", footer_style))
     story.append(Paragraph("Cette proposition est valable 30 jours à compter de la date d'émission", footer_style))
     
-    # Construction du PDF
     doc.build(story)
 
 # Fonction pour charger les données par défaut
@@ -363,6 +385,12 @@ def initialize_dataframe_columns(df):
     for col in numeric_columns:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+    # --- APPLICATION DE L'ARRONDI SUPERIEUR IMMEDIATEMENT AU CHARGEMENT ---
+    cols_to_round = ['Prix Brut HT', 'Prix Net HT']
+    for col in cols_to_round:
+        if col in df.columns:
+             df[col] = df[col].apply(round_up_price)
     
     return df
 
@@ -499,6 +527,7 @@ def main():
         
         # Configuration de la grille
         gb = GridOptionsBuilder.from_dataframe(df_filtered)
+        gb.configure_column("Taux de marque", hide=True)
         gb.configure_selection("multiple", use_checkbox=True, groupSelectsChildren=True)
         gb.configure_grid_options(domLayout='normal')
         gb.configure_default_column(enablePivot=True, enableValue=True, enableRowGroup=True)
@@ -606,6 +635,7 @@ def main():
                         st.session_state['selected_articles'].at[idx, 'Remise (%)'] = new_pct
                         # Calcul de la remise en € à partir du % (priorité au % si non nul)
                         euros_from_pct = float(st.session_state['selected_articles'].at[idx, 'Prix Brut HT']) * new_pct / 100.0
+                        # On stocke tel quel, l'arrondi se fera au calcul global
                         st.session_state['selected_articles'].at[idx, 'Remise (€)'] = euros_from_pct
                     else:  # mode == "En €"
                         # Champ Remise (€) actif
@@ -628,10 +658,12 @@ def main():
                     if mode == "En %":
                         # Remise (€) calculée automatiquement et affichée en RO
                         remise_calculee = float(st.session_state['selected_articles'].at[idx, 'Remise (€)'])
+                        # On affiche l'arrondi pour la clarté
+                        remise_aff = round_up_price(remise_calculee)
                         st.number_input(
                             "Remise (€) (calculée)",
                             min_value=0.0, step=0.1,
-                            value=remise_calculee,
+                            value=remise_aff,
                             key=f"remise_euros_ro_{idx}",
                             disabled=True,
                             help="Calculée automatiquement à partir de la remise en %"
@@ -671,17 +703,18 @@ def main():
                     st.session_state['selected_articles'].at[idx, 'RFA'] = rfa
                 
                 with col5:
-                    # Recalcule d'aperçu en temps réel (en respectant la logique globale)
-                    current_remise_euros = float(st.session_state['selected_articles'].at[idx, 'Remise (€)'])
-                    current_remise_autre = float(st.session_state['selected_articles'].at[idx, 'Remise autre (€)']) if 'Remise autre (€)' in st.session_state['selected_articles'].columns else 0.0
+                    # Recalcule d'aperçu en temps réel (en respectant la logique globale avec arrondi)
+                    current_remise_euros = round_up_price(float(st.session_state['selected_articles'].at[idx, 'Remise (€)']))
+                    current_remise_autre = round_up_price(float(st.session_state['selected_articles'].at[idx, 'Remise autre (€)'])) if 'Remise autre (€)' in st.session_state['selected_articles'].columns else 0.0
                     current_coeff = float(st.session_state['selected_articles'].at[idx, 'Coeff'])
                     current_rfa = float(st.session_state['selected_articles'].at[idx, 'RFA'])
                     
-                    prix_net_ht = float(st.session_state['selected_articles'].at[idx, 'Prix Net HT'])
-                    prix_apres_remise = prix_net_ht - current_remise_euros - (current_remise_autre or 0.0)
-                    ppgc_ht = prix_apres_remise * current_coeff if current_coeff != 0 else 0.0
-                    ppgc_ttc = ppgc_ht * 1.20
-                    prix_net_net = prix_apres_remise - (prix_apres_remise * current_rfa / 100.0) if current_rfa != 0 else prix_apres_remise
+                    prix_net_ht = round_up_price(float(st.session_state['selected_articles'].at[idx, 'Prix Net HT']))
+                    
+                    prix_apres_remise = round_up_price(prix_net_ht - current_remise_euros - (current_remise_autre or 0.0))
+                    ppgc_ht = round_up_price(prix_apres_remise * current_coeff if current_coeff != 0 else 0.0)
+                    ppgc_ttc = round_up_price(ppgc_ht * 1.20)
+                    prix_net_net = round_up_price(prix_apres_remise - (prix_apres_remise * current_rfa / 100.0) if current_rfa != 0 else prix_apres_remise)
                     
                     st.write("**Résultats :**")
                     st.write(f"Prix après remise : {prix_apres_remise:.2f}€")
@@ -712,8 +745,8 @@ def main():
         
         # Colonnes à afficher
         display_columns = ['Libellé article', 'Version', 'Code EDI', 'Prix Brut HT',
-                        'Remise (%)', 'Remise (€)', 'Prix Net HT', 'Prix net après remise',
-                        'Coeff', 'PPGC TTC', 'RFA', 'Prix Net Net']
+                           'Remise (%)', 'Remise (€)', 'Prix Net HT', 'Prix net après remise',
+                           'Coeff', 'PPGC TTC', 'RFA', 'Prix Net Net']
         
         # Afficher le tableau
         st.dataframe(
